@@ -66,8 +66,7 @@ export const config = {
   emailReplyTo: process.env.EMAIL_REPLY_TO || "ubuzimapharma@gmail.com",
   publicSiteUrl: (process.env.PUBLIC_SITE_URL || "http://localhost:3000").replace(/\/+$/, ""),
   corsOrigins: new Set(
-    (process.env.CORS_ORIGINS || "http://localhost:3000")
-      .split(",")
+    ["https://ubuzima-pharma.netlify.app", ...(process.env.CORS_ORIGINS || "http://localhost:3000").split(",")]
       .map(origin => origin.trim())
       .filter(Boolean)
   )
