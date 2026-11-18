@@ -39,6 +39,10 @@ const prescriptionUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.maxUploadBytes, files: 1, fields: 4, parts: 5 }
 });
+const salesUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.maxUploadBytes, files: 1, fields: 2, parts: 3 }
+});
 
 function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
@@ -178,6 +182,28 @@ async function storePrescription(file) {
   const filename = `${randomUUID()}.${extension}`;
   await fs.writeFile(path.join(config.patientCareDirectory, filename), buffer, { flag: "wx", mode: 0o600 });
   return { filename, mimeType };
+}
+
+async function storeSalesImage(file) {
+  if (!file) throw Object.assign(new Error("Upload a photo of the items sold."), { status: 400 });
+  const buffer = file.buffer;
+  const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  const isPng = buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const isWebp = buffer.subarray(0, 4).toString() === "RIFF" && buffer.subarray(8, 12).toString() === "WEBP";
+  if (!isJpeg && !isPng && !isWebp) throw Object.assign(new Error("Photo must be a valid JPEG, PNG, or WebP file."), { status: 400 });
+  await fs.mkdir(config.salesDirectory, { recursive: true });
+  const filename = `${randomUUID()}.webp`;
+  try {
+    await sharp(buffer, { limitInputPixels: 20_000_000 })
+      .rotate().resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 82 }).toFile(path.join(config.salesDirectory, filename));
+  } catch (error) {
+    if (/Input buffer|unsupported image|Vips|corrupt|pixel limit|Invalid image/i.test(error.message)) {
+      throw Object.assign(new Error("Photo must be a valid JPEG, PNG, or WebP file."), { status: 400 });
+    }
+    throw error;
+  }
+  return filename;
 }
 
 async function deletePrescription(filename) {
@@ -877,6 +903,93 @@ export function createApp() {
     res.set("Cache-Control", "no-store");
     return res.json({ staff: req.staffUser });
   });
+
+  app.post("/api/staff/sales", requireStaff, requireAnyRole("admin", "pharmacist"), requireCsrfForMutation, salesUpload.single("image"), asyncRoute(async (req, res) => {
+    const rawAmount = typeof req.body?.amount_bif === "string" ? req.body.amount_bif.trim() : "";
+    if (!/^\d{1,14}$/.test(rawAmount) || Number(rawAmount) < 1 || !Number.isSafeInteger(Number(rawAmount))) {
+      return res.status(400).json({ error: "Enter the sale amount as a positive whole number of BIF." });
+    }
+    const filename = await storeSalesImage(req.file);
+    try {
+      const result = await pool.query(
+        `INSERT INTO pharmacy_sales (id, staff_user_id, amount_bif, image_filename)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, amount_bif, sale_date, created_at`,
+        [randomUUID(), req.staffUser.id, rawAmount, filename]
+      );
+      res.set("Cache-Control", "no-store");
+      return res.status(201).json(result.rows[0]);
+    } catch (error) {
+      await fs.unlink(path.join(config.salesDirectory, filename)).catch(() => {});
+      throw error;
+    }
+  }));
+
+  app.get("/api/admin/earnings", requireStaff, requireRole("admin"), asyncRoute(async (req, res) => {
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const validDate = value => datePattern.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+    const todayResult = await pool.query("SELECT timezone('Africa/Bujumbura', NOW())::date::text AS today");
+    const today = todayResult.rows[0].today;
+    const from = typeof req.query.from === "string" ? req.query.from : today;
+    const to = typeof req.query.to === "string" ? req.query.to : today;
+    if (!validDate(from) || !validDate(to) || from > to) return res.status(400).json({ error: "Choose a valid date range." });
+    const days = Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
+    if (days > 366) return res.status(400).json({ error: "Date range cannot exceed 366 days." });
+    const result = await pool.query(
+      `WITH daily_sales AS (
+         SELECT sale_date, SUM(amount_bif)::NUMERIC(14,0) AS sales_bif, COUNT(*)::INTEGER AS entries
+         FROM pharmacy_sales WHERE sale_date BETWEEN $1::date AND $2::date GROUP BY sale_date
+       ), days AS (
+         SELECT day::date AS sale_date FROM generate_series($1::date, $2::date, INTERVAL '1 day') day
+       )
+       SELECT days.sale_date::text, COALESCE(daily_sales.sales_bif, 0)::NUMERIC(14,0) AS sales_bif,
+              COALESCE(daily_sales.entries, 0)::INTEGER AS entries
+       FROM days LEFT JOIN daily_sales USING (sale_date) ORDER BY days.sale_date DESC`,
+      [from, to]
+    );
+    const dailyFixedExpense = 500000 / 30;
+    const daysData = result.rows.map(row => {
+      const sales = Number(row.sales_bif);
+      const grossProfit = sales / 3;
+      return {
+        date: row.sale_date,
+        sales_bif: sales,
+        gross_profit_bif: Math.round(grossProfit * 100) / 100,
+        fixed_expense_bif: Math.round(dailyFixedExpense * 100) / 100,
+        earnings_bif: Math.round((grossProfit - dailyFixedExpense) * 100) / 100,
+        entries: row.entries
+      };
+    });
+    const totals = daysData.reduce((sum, day) => ({
+      sales_bif: sum.sales_bif + day.sales_bif,
+      gross_profit_bif: sum.gross_profit_bif + day.gross_profit_bif,
+      fixed_expense_bif: sum.fixed_expense_bif + day.fixed_expense_bif,
+      earnings_bif: sum.earnings_bif + day.earnings_bif,
+      entries: sum.entries + day.entries
+    }), { sales_bif: 0, gross_profit_bif: 0, fixed_expense_bif: 0, earnings_bif: 0, entries: 0 });
+    const sales = await pool.query(
+      `SELECT sales.id, sales.amount_bif, sales.sale_date::text, sales.created_at,
+              users.full_name AS staff_name
+       FROM pharmacy_sales sales LEFT JOIN staff_users users ON users.id = sales.staff_user_id
+       WHERE sales.sale_date BETWEEN $1::date AND $2::date
+       ORDER BY sales.created_at DESC LIMIT 500`,
+      [from, to]
+    );
+    res.set("Cache-Control", "no-store, private");
+    return res.json({
+      currency: "BIF", range: { from, to },
+      assumptions: { monthly_salary_bif: 200000, monthly_rent_bif: 300000, daily_fixed_expense_bif: Math.round(dailyFixedExpense * 100) / 100, gross_margin: 1 / 3 },
+      totals, days: daysData,
+      sales: sales.rows.map(row => ({ ...row, amount_bif: Number(row.amount_bif), image_url: `/api/admin/earnings/${row.id}/image` }))
+    });
+  }));
+
+  app.get("/api/admin/earnings/:id/image", requireStaff, requireRole("admin"), asyncRoute(async (req, res) => {
+    const result = await pool.query("SELECT image_filename FROM pharmacy_sales WHERE id = $1", [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: "Sale photo not found." });
+    res.set({ "Cache-Control": "no-store, private", "X-Content-Type-Options": "nosniff" });
+    return res.type("image/webp").sendFile(path.join(config.salesDirectory, result.rows[0].image_filename));
+  }));
 
   app.post("/api/staff/logout", requireStaff, requireCsrf, logoutSession);
   app.post("/api/admin/logout", requireStaff, requireCsrf, logoutSession);

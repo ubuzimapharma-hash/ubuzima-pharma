@@ -191,6 +191,17 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs (created_at DESC);
 
+CREATE TABLE IF NOT EXISTS pharmacy_sales (
+  id UUID PRIMARY KEY,
+  staff_user_id UUID REFERENCES staff_users(id) ON DELETE SET NULL,
+  amount_bif NUMERIC(14, 0) NOT NULL CHECK (amount_bif > 0),
+  sale_date DATE NOT NULL DEFAULT (timezone('Africa/Bujumbura', NOW())::date),
+  image_filename TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS pharmacy_sales_date_idx ON pharmacy_sales (sale_date DESC, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS staff_invitations (
   id UUID PRIMARY KEY,
   email TEXT NOT NULL,

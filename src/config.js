@@ -54,6 +54,7 @@ export const config = {
   maxVideoUploadBytes,
   uploadDirectory: path.resolve(root, process.env.UPLOAD_DIR || "uploads"),
   patientCareDirectory: path.resolve(root, process.env.PATIENT_CARE_DIR || "private-uploads", "patient-care"),
+  salesDirectory: path.resolve(root, process.env.PATIENT_CARE_DIR || "private-uploads", "sales"),
   videoUploadDirectory: path.resolve(root, process.env.UPLOAD_DIR || "uploads", "videos"),
   smtpHost: process.env.SMTP_HOST || "",
   smtpPort: Number(process.env.SMTP_PORT || 587),
