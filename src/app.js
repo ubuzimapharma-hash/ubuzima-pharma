@@ -909,13 +909,18 @@ export function createApp() {
     if (!/^\d{1,14}$/.test(rawAmount) || Number(rawAmount) < 1 || !Number.isSafeInteger(Number(rawAmount))) {
       return res.status(400).json({ error: "Enter the sale amount as a positive whole number of BIF." });
     }
+    const rawSaleDate = typeof req.body?.sale_date === "string" ? req.body.sale_date.trim() : "";
+    const validSaleDate = /^\d{4}-\d{2}-\d{2}$/.test(rawSaleDate) && !Number.isNaN(Date.parse(`${rawSaleDate}T00:00:00Z`)) && new Date(`${rawSaleDate}T00:00:00Z`).toISOString().slice(0, 10) === rawSaleDate;
+    if (rawSaleDate && !validSaleDate) {
+      return res.status(400).json({ error: "Choose a valid sale date." });
+    }
     const filename = await storeSalesImage(req.file);
     try {
       const result = await pool.query(
-        `INSERT INTO pharmacy_sales (id, staff_user_id, amount_bif, image_filename)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO pharmacy_sales (id, staff_user_id, amount_bif, sale_date, image_filename)
+         VALUES ($1, $2, $3, COALESCE($4::date, timezone('Africa/Bujumbura', NOW())::date), $5)
          RETURNING id, amount_bif, sale_date, created_at`,
-        [randomUUID(), req.staffUser.id, rawAmount, filename]
+        [randomUUID(), req.staffUser.id, rawAmount, rawSaleDate || null, filename]
       );
       res.set("Cache-Control", "no-store");
       return res.status(201).json(result.rows[0]);
