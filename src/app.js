@@ -930,6 +930,36 @@ export function createApp() {
     }
   }));
 
+  app.get("/api/staff/sales", requireStaff, requireAnyRole("admin", "pharmacist"), asyncRoute(async (req, res) => {
+    const result = await pool.query(
+      `SELECT id, amount_bif, sale_date::text, created_at
+       FROM pharmacy_sales
+       WHERE $1 = 'admin' OR staff_user_id = $2
+       ORDER BY created_at DESC LIMIT 100`,
+      [req.staffUser.role, req.staffUser.id]
+    );
+    res.set("Cache-Control", "no-store, private");
+    return res.json(result.rows.map(row => ({ ...row, amount_bif: Number(row.amount_bif) })));
+  }));
+
+  app.delete("/api/staff/sales/:id", requireStaff, requireAnyRole("admin", "pharmacist"), requireCsrfForMutation, asyncRoute(async (req, res) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(req.params.id)) {
+      return res.status(404).json({ error: "Sale not found or you do not have permission to delete it." });
+    }
+    const result = await pool.query(
+      `DELETE FROM pharmacy_sales
+       WHERE id = $1 AND ($2 = 'admin' OR staff_user_id = $3)
+       RETURNING image_filename`,
+      [req.params.id, req.staffUser.role, req.staffUser.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "Sale not found or you do not have permission to delete it." });
+    await fs.unlink(path.join(config.salesDirectory, result.rows[0].image_filename)).catch(error => {
+      if (error.code !== "ENOENT") console.error("Could not remove deleted sale photo.", error);
+    });
+    res.set("Cache-Control", "no-store");
+    return res.status(204).end();
+  }));
+
   app.get("/api/admin/earnings", requireStaff, requireRole("admin"), asyncRoute(async (req, res) => {
     const datePattern = /^\d{4}-\d{2}-\d{2}$/;
     const validDate = value => datePattern.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
