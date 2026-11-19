@@ -932,14 +932,18 @@ export function createApp() {
 
   app.get("/api/staff/sales", requireStaff, requireAnyRole("admin", "pharmacist"), asyncRoute(async (req, res) => {
     const result = await pool.query(
-      `SELECT id, amount_bif, sale_date::text, created_at
-       FROM pharmacy_sales
+      `SELECT sales.id, sales.amount_bif, sales.sale_date::text, sales.created_at
+       FROM pharmacy_sales sales
        WHERE $1 = 'admin' OR staff_user_id = $2
        ORDER BY created_at DESC LIMIT 100`,
       [req.staffUser.role, req.staffUser.id]
     );
     res.set("Cache-Control", "no-store, private");
-    return res.json(result.rows.map(row => ({ ...row, amount_bif: Number(row.amount_bif) })));
+    return res.json(result.rows.map(row => ({
+      ...row,
+      amount_bif: Number(row.amount_bif),
+      ...(req.staffUser.role === "admin" ? { image_url: `/api/admin/earnings/${row.id}/image` } : {})
+    })));
   }));
 
   app.delete("/api/staff/sales/:id", requireStaff, requireAnyRole("admin", "pharmacist"), requireCsrfForMutation, asyncRoute(async (req, res) => {
@@ -1019,6 +1023,27 @@ export function createApp() {
       assumptions: { monthly_salary_bif: 200000, monthly_rent_bif: 300000, daily_fixed_expense_bif: Math.round(dailyFixedExpense * 100) / 100, gross_margin: 1 / 3 },
       totals, days: daysData,
       sales: sales.rows.map(row => ({ ...row, amount_bif: Number(row.amount_bif), image_url: `/api/admin/earnings/${row.id}/image` }))
+    });
+  }));
+
+  app.get("/api/admin/earnings/summary", requireStaff, requireRole("admin"), asyncRoute(async (req, res) => {
+    const result = await pool.query(
+      `SELECT date_trunc('month', sale_date)::date::text AS month,
+              SUM(amount_bif)::NUMERIC(14,0) AS sales_bif, COUNT(*)::INTEGER AS entries
+       FROM pharmacy_sales
+       GROUP BY date_trunc('month', sale_date)::date
+       ORDER BY month DESC`
+    );
+    const months = result.rows.map(row => {
+      const sales = Number(row.sales_bif);
+      return { month: row.month.slice(0, 7), sales_bif: sales, gross_profit_bif: Math.round(sales / 3 * 100) / 100, entries: row.entries };
+    });
+    const sales = months.reduce((total, month) => total + month.sales_bif, 0);
+    res.set("Cache-Control", "no-store, private");
+    return res.json({
+      currency: "BIF",
+      all_time: { sales_bif: sales, gross_profit_bif: Math.round(sales / 3 * 100) / 100, entries: months.reduce((total, month) => total + month.entries, 0) },
+      months
     });
   }));
 
