@@ -995,13 +995,16 @@ export function createApp() {
         entries: row.entries
       };
     });
-    const totals = daysData.reduce((sum, day) => ({
-      sales_bif: sum.sales_bif + day.sales_bif,
-      gross_profit_bif: sum.gross_profit_bif + day.gross_profit_bif,
-      fixed_expense_bif: sum.fixed_expense_bif + day.fixed_expense_bif,
-      earnings_bif: sum.earnings_bif + day.earnings_bif,
-      entries: sum.entries + day.entries
-    }), { sales_bif: 0, gross_profit_bif: 0, fixed_expense_bif: 0, earnings_bif: 0, entries: 0 });
+    const salesTotal = daysData.reduce((sum, day) => sum + day.sales_bif, 0);
+    const grossProfitTotal = salesTotal / 3;
+    const fixedExpenseTotal = days * dailyFixedExpense;
+    const totals = {
+      sales_bif: salesTotal,
+      gross_profit_bif: Math.round(grossProfitTotal * 100) / 100,
+      fixed_expense_bif: Math.round(fixedExpenseTotal * 100) / 100,
+      earnings_bif: Math.round((grossProfitTotal - fixedExpenseTotal) * 100) / 100,
+      entries: daysData.reduce((sum, day) => sum + day.entries, 0)
+    };
     const sales = await pool.query(
       `SELECT sales.id, sales.amount_bif, sales.sale_date::text, sales.created_at,
               users.full_name AS staff_name
